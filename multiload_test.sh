@@ -43,6 +43,7 @@ expect_too_small() {
 }
 
 expect_too_small stream-sum 120 8
+expect_too_small memset-nt 120 8
 expect_too_small stream-copy 184 8
 expect_too_small stream-triad 128 64
 expect_too_small stream-triad 248 8
@@ -63,6 +64,7 @@ run_case() {
 
 run_case triad_aligned -v -v -l stream-triad -m 256 -s 64 -O 0 -n 1 -t 1 &
 run_case sum_min       -v -v -l stream-sum   -m 128 -s 8  -O 1 -n 1 -t 1 &
+run_case memset_nt_min -v -v -l memset-nt    -m 128 -s 8  -O 1 -n 1 -t 1 &
 run_case copy_min      -v -v -l stream-copy  -m 192 -s 8  -O 1 -n 1 -t 1 &
 run_case triad_min     -v -v -l stream-triad -m 256 -s 8  -O 1 -n 1 -t 1 &
 run_case triad_nt_min  -v -v -l stream-triad-nontemporal-injection-delay -m 256 -s 8 -O 1 -n 1 -t 1 &
@@ -71,7 +73,7 @@ run_case memset_tiny   -l memset-libc  -m 8 -s 8 -n 1 -t 1 &
 run_case memsetz_tiny  -l memsetz-libc -m 8 -s 8 -n 1 -t 1 &
 wait
 
-for tag in triad_aligned sum_min copy_min triad_min triad_nt_min memcpy_tiny memset_tiny memsetz_tiny; do
+for tag in triad_aligned sum_min memset_nt_min copy_min triad_min triad_nt_min memcpy_tiny memset_tiny memsetz_tiny; do
   rc=$(cat "${TMPDIR_TEST}/${tag}.rc")
   if [[ "${rc}" -ne 0 ]]; then
     fail "${tag} exited with rc=${rc}: $(cat "${TMPDIR_TEST}/${tag}.out")"
@@ -98,6 +100,7 @@ check_alignment() {
 
 check_alignment triad_aligned 0
 check_alignment sum_min 63
+check_alignment memset_nt_min 63
 check_alignment copy_min 63
 check_alignment triad_min 63
 check_alignment triad_nt_min 63

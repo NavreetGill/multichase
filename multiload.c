@@ -570,6 +570,64 @@ static inline void *align_load_arena(const per_thread_t *t, size_t ops,
 }
 
 //--------------------------------------------------------------------------------------------------------
+// Pure write load using non-temporal (streaming) stores of whole cache lines.
+// Unlike memset(), which may use temporal stores (read-for-ownership), this
+// produces ~0:1 rd:wr traffic at the memory controller.
+static void load_memset_nt(per_thread_t *t) {
+#define LOOP_OPS 1
+  const uint64_t elems_per_line = DEF_CACHELINE / sizeof(uint64_t);
+  uint64_t load_loop;
+  register uint64_t *a = align_load_arena(t, LOOP_OPS, &load_loop);
+  register uint64_t N = load_loop / sizeof(uint64_t);
+  uint64_t load_bites = N * sizeof(uint64_t) * LOOP_OPS;
+  register uint64_t i;
+  const uint64_t v = 0xdeadbeefdeadbeefULL;  // non-zero data
+
+  if (verbosity > 1) {
+    printf("load_arena=%p, load_total_memory=0x%lX, load_loop=0x%lX, N=0x%lX, "
+           "a=%p\n",
+           (char *)t->x.load_arena, t->x.load_total_memory, load_loop, N, a);
+  }
+
+  LOAD_MEMORY_INIT_MIBPS
+  uint64_t interval_ns = t->x.load_interval_ns;
+  uint64_t active_ns = t->x.load_active_ns;
+  do {
+    CHECK_DUTY_CYCLE(interval_ns, active_ns)
+    for (i = 0; i < N; i += elems_per_line) {
+#if defined(__aarch64__)
+      asm volatile(
+          "stnp %0, %0, [%1]\n\t"
+          "stnp %0, %0, [%1, #16]\n\t"
+          "stnp %0, %0, [%1, #32]\n\t"
+          "stnp %0, %0, [%1, #48]\n\t"
+          :
+          : "r"(v), "r"(a + i)
+          : "memory");
+#elif defined(__x86_64__)
+      _mm_stream_si64((long long *)&a[i + 0], v);
+      _mm_stream_si64((long long *)&a[i + 1], v);
+      _mm_stream_si64((long long *)&a[i + 2], v);
+      _mm_stream_si64((long long *)&a[i + 3], v);
+      _mm_stream_si64((long long *)&a[i + 4], v);
+      _mm_stream_si64((long long *)&a[i + 5], v);
+      _mm_stream_si64((long long *)&a[i + 6], v);
+      _mm_stream_si64((long long *)&a[i + 7], v);
+#else
+      for (uint64_t j = 0; j < elems_per_line; ++j) a[i + j] = v;
+#endif
+    }
+#if defined(__aarch64__)
+    asm volatile("dsb ishst" ::: "memory");
+#elif defined(__x86_64__)
+    _mm_sfence();
+#endif
+    LOAD_MEMORY_SAMPLE_MIBPS
+  } while (1);
+#undef LOOP_OPS
+}
+
+//--------------------------------------------------------------------------------------------------------
 static void load_stream_triad(per_thread_t *t) {
 #define LOOP_OPS 3
   uint64_t load_loop, load_bites;
@@ -755,6 +813,15 @@ static const chase_t memloads[] = {
         .parallelism = 0,
     },
     {
+        .fn = load_memset_nt,
+        .base_object_size = sizeof(void *),
+        .name = "memset-nt",
+        .usage1 = "memset-nt",
+        .usage2 = "0:1 rd:wr - non-temporal full cache line stores (no RFO)",
+        .requires_arg = 0,
+        .parallelism = 0,
+    },
+    {
         .fn = load_stream_copy,
         .base_object_size = sizeof(void *),
         .name = "stream-copy",
@@ -808,7 +875,7 @@ static size_t memload_min_memory(const chase_t *m) {
   // alignment padding and carve the rest into `ops` 64-byte-aligned
   // sub-buffers, requiring `ops * 64 + 63` bytes (rounded up to the next
   // `sizeof(void *)` stride multiple: `(ops + 1) * DEF_CACHELINE`).
-  if (m->fn == load_stream_sum) {
+  if (m->fn == load_stream_sum || m->fn == load_memset_nt) {
     return 2 * DEF_CACHELINE;  // ops = 1 (128 bytes)
   }
   if (m->fn == load_stream_copy) {
